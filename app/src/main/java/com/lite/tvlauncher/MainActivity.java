@@ -28,6 +28,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.LruCache;
@@ -38,6 +39,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.Interpolator;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
@@ -55,6 +57,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 /**
  * Lite Launcher: a TV home screen made of horizontal rows (Inputs, TV Apps, Mobile Apps,
@@ -71,6 +74,13 @@ public class MainActivity extends Activity {
 
     private static final int TILE_W = 176;
     private static final int TILE_H = 99;
+
+    private static final int ACCENT = 0xFF2DD4BF;
+    private static final int APP_TILE = 0xFF1B2733;
+    private static final long ANIM_MS = 160;
+
+    // One shared interpolator: no allocation on every remote key press.
+    private static final Interpolator EASE = new DecelerateInterpolator(1.6f);
 
     // ------------------------------------------------------------------ model
 
@@ -97,7 +107,7 @@ public class MainActivity extends Activity {
         }
 
         static Entry app(int kind, String label, ComponentName cn, String category) {
-            return new Entry(kind, label, null, 0xFF262033, cn, category, null, null);
+            return new Entry(kind, label, null, APP_TILE, cn, category, null, null);
         }
 
         static Entry tool(String label, String glyph, int color, Intent... intents) {
@@ -105,7 +115,7 @@ public class MainActivity extends Activity {
         }
 
         static Entry input(String label, String glyph, String inputId) {
-            return new Entry(INPUT, label, glyph, 0xFF5A4690, null, null, null, inputId);
+            return new Entry(INPUT, label, glyph, 0xFF1D7C94, null, null, null, inputId);
         }
 
         boolean isApp() {
@@ -182,7 +192,19 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         pm = getPackageManager();
-        loader = Executors.newSingleThreadExecutor();
+        // Icon loading runs at background priority so it can never stall the remote.
+        loader = Executors.newSingleThreadExecutor(new ThreadFactory() {
+            @Override
+            public Thread newThread(final Runnable r) {
+                return new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
+                        r.run();
+                    }
+                }, "icon-loader");
+            }
+        });
         cache = new LruCache<String, Img>(60);
         setContentView(buildRoot());
     }
@@ -312,6 +334,17 @@ public class MainActivity extends Activity {
         clp.topMargin = dp(28);
         clp.rightMargin = dp(56);
         root.addView(clock, clp);
+
+        TextView hint = new TextView(this);
+        hint.setText("Hold OK on an app for options");
+        hint.setTextColor(0x80FFFFFF);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        FrameLayout.LayoutParams hlp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.START);
+        hlp.leftMargin = dp(70);
+        hlp.bottomMargin = dp(18);
+        root.addView(hint, hlp);
         return root;
     }
 
@@ -342,15 +375,34 @@ public class MainActivity extends Activity {
         if (firstTarget == null && !cells.isEmpty()) {
             firstTarget = (View) cells.get(0).icon.getParent().getParent();
         }
+
+        // Gentle fade-in instead of rows popping into place.
+        content.setAlpha(0f);
+        content.animate().alpha(1f).setDuration(300).start();
     }
 
     private void addSection(String title, List<Entry> list, int index) {
-        TextView header = new TextView(this);
-        header.setText(title);
-        header.setTextColor(0xCCFFFFFF);
-        header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        header.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(14), 0, 0, 0);
+
+        View dot = new View(this);
+        GradientDrawable dotBg = new GradientDrawable();
+        dotBg.setShape(GradientDrawable.OVAL);
+        dotBg.setColor(ACCENT);
+        dot.setBackground(dotBg);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(8), dp(8));
+        dlp.rightMargin = dp(10);
+        header.addView(dot, dlp);
+
+        TextView headerText = new TextView(this);
+        headerText.setText(title);
+        headerText.setTextColor(0xE6FFFFFF);
+        headerText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        headerText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        header.addView(headerText);
+
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         hlp.topMargin = dp(index == 0 ? 0 : 8);
@@ -393,11 +445,12 @@ public class MainActivity extends Activity {
         cell.setTag(e);
 
         final FrameLayout tile = new FrameLayout(this);
-        GradientDrawable tileBg = new GradientDrawable();
-        tileBg.setColor(e.color);
-        tileBg.setCornerRadius(dp(10));
+        // Soft diagonal gradient from the tile color to a darker shade of it.
+        GradientDrawable tileBg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{lighten(e.color), darken(e.color)});
+        tileBg.setCornerRadius(dp(12));
         tile.setBackground(tileBg);
-        roundClip(tile, dp(10));
+        roundClip(tile, dp(12));
 
         ImageView icon = new ImageView(this);
         tile.addView(icon, new FrameLayout.LayoutParams(
@@ -417,9 +470,9 @@ public class MainActivity extends Activity {
         // White focus ring: follows the cell's focused state.
         View ring = new View(this);
         GradientDrawable ringOn = new GradientDrawable();
-        ringOn.setCornerRadius(dp(10));
+        ringOn.setCornerRadius(dp(12));
         ringOn.setColor(Color.TRANSPARENT);
-        ringOn.setStroke(dp(3), Color.WHITE);
+        ringOn.setStroke(dp(3), 0xFFE8FFFB);
         StateListDrawable ringStates = new StateListDrawable();
         ringStates.addState(new int[]{android.R.attr.state_focused}, ringOn);
         ringStates.addState(new int[]{}, new ColorDrawable(Color.TRANSPARENT));
@@ -448,11 +501,13 @@ public class MainActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 float s = hasFocus ? 1.15f : 1f;
-                tile.animate().scaleX(s).scaleY(s).setDuration(140)
-                        .setInterpolator(new DecelerateInterpolator()).start();
+                // withLayer(): the tile is animated as one GPU texture, which is
+                // much smoother on a weak TV chip.
+                tile.animate().scaleX(s).scaleY(s).setDuration(ANIM_MS)
+                        .setInterpolator(EASE).withLayer().start();
                 label.animate().alpha(hasFocus ? 1f : 0f).translationY(hasFocus ? dp(8) : 0)
-                        .setDuration(140).start();
-                cell.animate().translationZ(hasFocus ? dp(8) : 0).setDuration(140).start();
+                        .setDuration(ANIM_MS).setInterpolator(EASE).start();
+                cell.animate().translationZ(hasFocus ? dp(8) : 0).setDuration(ANIM_MS).start();
                 if (hasFocus && sectionIndex == 0) {
                     scroll.smoothScrollTo(0, 0);
                 }
@@ -477,6 +532,16 @@ public class MainActivity extends Activity {
             bindIcon(icon, e);
         }
         return cell;
+    }
+
+    private static int lighten(int c) {
+        return Color.rgb(Math.min(255, Color.red(c) + 22), Math.min(255, Color.green(c) + 22),
+                Math.min(255, Color.blue(c) + 22));
+    }
+
+    private static int darken(int c) {
+        return Color.rgb(Math.round(Color.red(c) * 0.72f), Math.round(Color.green(c) * 0.72f),
+                Math.round(Color.blue(c) * 0.72f));
     }
 
     private void roundClip(View v, final int radius) {
@@ -580,15 +645,15 @@ public class MainActivity extends Activity {
         sortByLabel(s.apps);
         sortByLabel(s.mobile);
 
-        s.tools.add(Entry.tool("Settings", "SET", 0xFF3A4A5E,
+        s.tools.add(Entry.tool("Settings", "SET", 0xFF3B6EA5,
                 new Intent(Settings.ACTION_SETTINGS)));
-        s.tools.add(Entry.tool("Developer options", "DEV", 0xFF5B3F8C,
+        s.tools.add(Entry.tool("Developer options", "DEV", 0xFF1F8A82,
                 new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
                 new Intent().setComponent(new ComponentName("com.android.settings",
                         "com.android.settings.DevelopmentSettings")),
                 new Intent().setComponent(new ComponentName("com.android.settings",
                         "com.android.settings.Settings$DevelopmentSettingsActivity"))));
-        s.tools.add(Entry.tool("Wi-Fi", "WIFI", 0xFF2B6E8F,
+        s.tools.add(Entry.tool("Wi-Fi", "WIFI", 0xFF2A7FB8,
                 new Intent(Settings.ACTION_WIFI_SETTINGS)));
         return s;
     }
@@ -727,21 +792,25 @@ public class MainActivity extends Activity {
             Canvas c = new Canvas(b);
             Paint p = new Paint();
 
+            // Deep navy base.
             p.setShader(new LinearGradient(0, 0, 0, bh,
-                    new int[]{0xFF0D0820, 0xFF1B0F38, 0xFF07050E}, null, Shader.TileMode.CLAMP));
+                    new int[]{0xFF04101C, 0xFF082234, 0xFF030911}, null, Shader.TileMode.CLAMP));
             c.drawRect(0, 0, bw, bh, p);
 
-            p.setShader(new RadialGradient(bw * 0.78f, bh * 0.32f, bw * 0.60f,
-                    new int[]{0xE0C060E8, 0x88803BD8, 0x00803BD8},
+            // Teal glow, upper right.
+            p.setShader(new RadialGradient(bw * 0.78f, bh * 0.30f, bw * 0.60f,
+                    new int[]{0xD01FB5A5, 0x80167C98, 0x00167C98},
                     new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
             c.drawRect(0, 0, bw, bh, p);
 
-            p.setShader(new RadialGradient(bw * 0.97f, bh * 0.78f, bw * 0.45f,
-                    new int[]{0xB0F0508C, 0x00F0508C}, null, Shader.TileMode.CLAMP));
+            // Cyan-blue glow, lower right.
+            p.setShader(new RadialGradient(bw * 0.97f, bh * 0.80f, bw * 0.46f,
+                    new int[]{0xA02A7FE0, 0x002A7FE0}, null, Shader.TileMode.CLAMP));
             c.drawRect(0, 0, bw, bh, p);
 
+            // Deep blue glow, bottom middle.
             p.setShader(new RadialGradient(bw * 0.55f, bh * 1.05f, bw * 0.50f,
-                    new int[]{0x804B73FF, 0x004B73FF}, null, Shader.TileMode.CLAMP));
+                    new int[]{0x801D4ED8, 0x001D4ED8}, null, Shader.TileMode.CLAMP));
             c.drawRect(0, 0, bw, bh, p);
 
             p.setShader(new LinearGradient(0, 0, bw * 0.75f, 0,
