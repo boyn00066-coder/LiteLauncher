@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.lite.tvlauncher'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.lite.tvlauncher'
+        minSdk 21
+        // 28 matches the TV's Android 9, and avoids package-visibility limits
+        // that would hide other apps from the launcher on newer targets.
+        targetSdk 28
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Signed with the debug key so the APK installs directly.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+// No dependencies on purpose: plain Android framework only, so the APK stays tiny.
